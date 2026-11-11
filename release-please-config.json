@@ -1,0 +1,10 @@
+{
+  "release-type": "simple",
+  "packages": {
+    ".": {
+      "package-name": "underwraps",
+      "include-component-in-tag": false,
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}
