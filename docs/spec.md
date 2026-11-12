@@ -31,9 +31,8 @@ surprises before owner count/order/pagination. No external database query servic
 or raw persistence interface is permitted. CI must guard the full source tree and
 exercise negative guard fixtures and a real database secrecy matrix.
 
-The remaining v1 milestones add OIDC, a phone-friendly React UI embedded in Go,
-caller-view MCP behind a gateway, then private single-replica deployment and live
-acceptance. Hostname and exposure are configuration; first exposure is private.
-URL auto-fill and broader exposure are later work. M1 does not claim those flows
-are usable or deployed. Conventional Commits feed release-please; main commits
+M2 implements OIDC, a phone-friendly React UI embedded in Go, and caller-view
+MCP behind a gateway. Private single-replica deployment and live acceptance remain
+for M3. Hostname and exposure are configuration; first exposure is private.
+URL auto-fill and broader exposure are later work. Source and fixture verification do not establish live deployment. Conventional Commits feed release-please; main commits
 and releases publish immutable and versioned images respectively.

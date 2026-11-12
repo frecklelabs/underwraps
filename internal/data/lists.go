@@ -197,14 +197,14 @@ func (s *Store) detail(ctx context.Context, v Identity, id int64, p Page, delete
 	if err = s.db.QueryRowContext(ctx, "SELECT count(*) FROM items i LEFT JOIN claims c ON c.item_id=i.id AND c.active=1 WHERE "+where, id).Scan(&out.Count); err != nil {
 		return View{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT i.id,i.name,i.link,i.price,i.note,i.image,i.quantity,i.priority,i.created,i.updated,i.revision,i.deleted,i.surprise,c.buyer_id FROM items i LEFT JOIN claims c ON c.item_id=i.id AND c.active=1 WHERE "+where+" ORDER BY i.priority DESC,i.id ASC LIMIT ? OFFSET ?", id, p.Limit, p.Offset)
+	rows, err := s.db.QueryContext(ctx, "SELECT i.id,i.name,i.link,i.price,i.note,i.image,i.quantity,i.priority,i.created,i.updated,i.revision,i.deleted,i.surprise,c.buyer_id,i.creator_id,COALESCE(u.name,'') FROM items i LEFT JOIN claims c ON c.item_id=i.id AND c.active=1 LEFT JOIN users u ON u.id=c.buyer_id WHERE "+where+" ORDER BY i.priority DESC,i.id ASC LIMIT ? OFFSET ?", id, p.Limit, p.Offset)
 	if err != nil {
 		return View{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var i ViewerItem
-		if err = rows.Scan(&i.ID, &i.Name, &i.Link, &i.Price, &i.Note, &i.Image, &i.Quantity, &i.Priority, &i.CreatedAt, &i.UpdatedAt, &i.Revision, &i.Deleted, &i.Surprise, &i.BuyerID); err != nil {
+		if err = rows.Scan(&i.ID, &i.Name, &i.Link, &i.Price, &i.Note, &i.Image, &i.Quantity, &i.Priority, &i.CreatedAt, &i.UpdatedAt, &i.Revision, &i.Deleted, &i.Surprise, &i.BuyerID, &i.CreatorID, &i.BuyerName); err != nil {
 			return View{}, err
 		}
 		i.RemovedByOwner = i.Deleted && !i.Surprise
