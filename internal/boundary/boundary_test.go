@@ -9,6 +9,7 @@ import (
 
 func TestNegativeFixtures(t *testing.T) {
 	for name, src := range map[string]string{
+		"embed-opener":     `package bad;import "embed";var file embed.FS`,
 		"checker-opener":   `package bad;import "github.com/frecklelabs/underwraps/internal/boundary";func read(){boundary.Check("/data")}`,
 		"http-file":        `package bad;import h "net/http";var _=h.FileServer`,
 		"sql":              "package bad;import q \"database/sql\";var _ *q.DB",

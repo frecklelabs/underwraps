@@ -15,11 +15,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - run: npm ci --prefix web
+      - run: npm run build --prefix web
+      - run: git diff --exit-code -- internal/web/dist
       - run: go run ./cmd/check-boundary
       - run: test -z "$(gofmt -l cmd internal)"
       - run: go vet ./...
       - run: go test -race -count=1 ./...
       - run: go test -count=10 ./internal/data -run 'TestClaimRace|TestOwnerDifferential'
+      - run: npx --prefix web playwright install --with-deps chromium
+      - run: npm run test:e2e --prefix web
   image:
     needs: test
     runs-on: ubuntu-latest
