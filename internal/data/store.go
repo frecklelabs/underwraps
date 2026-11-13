@@ -14,11 +14,15 @@ import (
 )
 
 type Store struct {
-	mu       sync.Mutex
-	db       *sql.DB
-	location *time.Location
-	clock    func() time.Time
-	admins   map[Identity]bool
+	mu            sync.Mutex
+	db            *sql.DB
+	location      *time.Location
+	clock         func() time.Time
+	admins        map[Identity]bool
+	staticAdmins  map[Identity]bool
+	issuer        string
+	groupMappings []GroupMapping
+	adminGroups   []string
 }
 
 // Open is the sole database-file opener. The directory must be private to the app.
@@ -46,12 +50,25 @@ func Open(c Config) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, location: loc, clock: c.Clock, admins: map[Identity]bool{}}
+	s.issuer = c.Issuer
+	s.groupMappings = append([]GroupMapping(nil), c.Groups...)
+	s.adminGroups = append([]string(nil), c.AdministratorGroups...)
+	s.staticAdmins = map[Identity]bool{}
+	seenGroups := map[int64]bool{}
+	for _, g := range c.Groups {
+		if g.ID <= 0 || g.Claim == "" || g.Name == "" || seenGroups[g.ID] {
+			db.Close()
+			return nil, ErrInvalid
+		}
+		seenGroups[g.ID] = true
+	}
 	for _, id := range c.Administrators {
 		if !validIdentity(id) {
 			db.Close()
 			return nil, ErrInvalid
 		}
 		s.admins[id] = true
+		s.staticAdmins[id] = true
 	}
 	if err = s.migrate(); err != nil {
 		db.Close()

@@ -19,10 +19,13 @@ type Identity struct {
 	Subject string
 }
 type Config struct {
-	Path           string
-	Timezone       string
-	Clock          func() time.Time
-	Administrators []Identity
+	Path                string
+	Timezone            string
+	Clock               func() time.Time
+	Administrators      []Identity
+	Issuer              string
+	Groups              []GroupMapping
+	AdministratorGroups []string
 }
 type User struct {
 	ID       int64
@@ -56,6 +59,8 @@ type OwnerItem struct {
 }
 type ViewerItem struct {
 	OwnerItem
+	CreatorID      int64
+	BuyerName      string
 	Surprise       bool
 	BuyerID        *int64
 	RemovedByOwner bool

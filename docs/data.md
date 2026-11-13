@@ -4,7 +4,7 @@
 and runs migrations. `Store.db` is unexported. No operation returns SQL, handles,
 rows, connections or callbacks. `Config` requires a private path, a valid IANA
 calendar timezone, an injected clock and optional configured administrator
-issuer/subject pairs. Identity verification belongs to M2: callers must not
+issuer/subject pairs. M2 verifies identities before invoking the data boundary: callers must not
 construct identities from unverified request parameters. Display names convey no
 permission. The application owns one Store and one mounted database directory.
 
@@ -78,3 +78,9 @@ membership revocation, admin isolation, archive midnight, buy races across two
 Store instances, persistence and migrations. Differential tests clone identical
 on-disk starting worlds and compare complete serialized owner responses and
 mutation/error results with and without hidden purchases and surprises.
+
+M2 adds `SignIn(ctx, viewer, name, verifiedGroups)` and configured issuer/group/
+admin mappings. It creates only the verified caller and reconciles their
+configured memberships without reactivating disabled users or groups. See
+[runtime setup](runtime.md). Member-only DTOs now include buyer display name and
+surprise creator ID; the owner DTO remains unchanged.
