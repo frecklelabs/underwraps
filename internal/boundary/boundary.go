@@ -17,7 +17,7 @@ import (
 var allowed = map[string]bool{}
 
 func init() {
-	for _, p := range strings.Fields(`context crypto/rand encoding/binary encoding/json errors flag fmt io/fs log log/slog net/http os os/signal path/filepath slices sort strconv strings sync sync/atomic syscall testing time github.com/frecklelabs/underwraps/internal/data `) {
+	for _, p := range strings.Fields(`bytes crypto/sha256 crypto/subtle encoding/base64 io net/url net/http/httptest crypto/rsa github.com/coreos/go-oidc/v3/oidc golang.org/x/oauth2 github.com/modelcontextprotocol/go-sdk/mcp github.com/go-jose/go-jose/v4 github.com/frecklelabs/underwraps/internal/server github.com/frecklelabs/underwraps/internal/web context crypto/rand encoding/binary encoding/json errors flag fmt io/fs log log/slog net/http os os/signal path/filepath slices sort strconv strings sync sync/atomic syscall testing time github.com/frecklelabs/underwraps/internal/data `) {
 		allowed[p] = true
 	}
 }
@@ -82,17 +82,17 @@ func inspect(path string, src []byte) error {
 		if !inData && p == "github.com/frecklelabs/underwraps/internal/boundary" && path != "cmd/check-boundary/main.go" {
 			return fmt.Errorf("%s: checker import outside checker command", path)
 		}
-		permitted := allowed[p] || (p == "github.com/frecklelabs/underwraps/internal/boundary" && path == "cmd/check-boundary/main.go") || (tooling && (strings.HasPrefix(p, "go/") || p == "bytes"))
+		permitted := (p == "embed" && path == "internal/web/assets.go") || allowed[p] || (p == "github.com/frecklelabs/underwraps/internal/boundary" && path == "cmd/check-boundary/main.go") || (tooling && (strings.HasPrefix(p, "go/") || p == "bytes"))
 		if !inData && (!permitted || p == "syscall") {
 			return fmt.Errorf("%s: import %s outside data boundary", path, p)
 		}
-		if !inData && (name == "." || name == "_") {
+		if !inData && (name == "." || name == "_") && !(path == "internal/web/assets.go" && p == "embed" && name == "_") {
 			return fmt.Errorf("%s: anonymous imports outside data boundary", path)
 		}
 	}
 	if inData {
 		exports := map[string]bool{}
-		for _, name := range strings.Fields(`Identity Config User Group Request OwnerItem ViewerItem List OwnerView MemberView View Summary Page Store ErrMissing ErrArchived ErrInvalid ErrConflict Open Close Register Users SetUser Groups CreateGroup SetGroup SetMembership CreateList UpdateList ListDetail DeletedItems Lists AddRequest AddSurprise UpdateRequest DeleteRequest RestoreRequest Claim ReleaseClaim DeleteSurprise`) {
+		for _, name := range strings.Fields(`Identity Config User Group GroupMapping Account SignIn Request OwnerItem ViewerItem List OwnerView MemberView View Summary Page Store ErrMissing ErrArchived ErrInvalid ErrConflict Open Close Register Users SetUser Groups CreateGroup SetGroup SetMembership CreateList UpdateList ListDetail DeletedItems Lists AddRequest AddSurprise UpdateRequest DeleteRequest RestoreRequest Claim ReleaseClaim DeleteSurprise`) {
 			exports[name] = true
 		}
 		checkExport := func(name string) error {

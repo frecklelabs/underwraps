@@ -1,7 +1,7 @@
 # Migrations, recovery and releases
 
-This milestone is a library plus a smoke command. It neither runs a server nor
-provides a database query endpoint. Do not deploy the M1 command as a service.
+M2 runs the HTTP service described in [runtime setup](runtime.md), with no raw
+database query endpoint. M1 was only a library and initialization smoke command.
 The deployment milestone must mount the persistent directory only in the app,
 with one replica, no query sidecar/service and no external DB MCP endpoint.
 Secrets, issuer, subjects, groups, hostname, exposure, timezone and storage values

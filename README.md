@@ -3,9 +3,10 @@
 Dated, group-shared wish lists with purchases and surprise gifts kept private from
 the recipient. Fresh Go implementation, Apache-2.0 licensed.
 
-This is the M1 database and release foundation. There is no usable UI, login,
-HTTP/MCP listener or deployment yet. The command initializes/migrates a database
-and exits. It deliberately cannot expose a database query endpoint.
+M2 adds OIDC-only login, dated group-shared lists, a phone-friendly React UI
+embedded in the Go binary, and caller-scoped MCP over Streamable HTTP. Purchases
+and surprises stay private from the recipient, including after archival. No live
+deployment is claimed.
 
 Requires Go as specified in `go.mod`. Reproduce the checks with:
 
@@ -17,11 +18,9 @@ go test -count=10 ./internal/data -run 'TestClaimRace|TestOwnerDifferential'
 CGO_ENABLED=0 go build ./cmd/underwraps
 ```
 
-Initialize a development database (not a server):
-
-```sh
-go run ./cmd/underwraps -database ./state/app.sqlite -timezone America/Chicago
-```
+Build the embedded UI with `npm ci --prefix web && npm run build --prefix web`.
+Configure OIDC and group mappings privately as described in [runtime setup](docs/runtime.md),
+then run the server with a private database path and calendar timezone.
 
 See [the contract](docs/spec.md), [schema and API](docs/data.md), and
 [migrations, recovery and release prerequisites](docs/operations.md).

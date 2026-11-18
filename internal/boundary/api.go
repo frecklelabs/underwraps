@@ -13,6 +13,7 @@ import (
 // Operation signatures are a reviewed contract: new methods, receiver changes,
 // viewer removal, raw query parameters and interface returns require review here.
 var operations = map[string]bool{
+	`func (s *Store) SignIn(ctx context.Context, v Identity, name string, claims []string) (Account, error)`:                 true,
 	`func (s *Store) AddRequest(ctx context.Context, v Identity, list int64, r Request) (OwnerItem, error)`:                  true,
 	`func (s *Store) AddSurprise(ctx context.Context, v Identity, list int64, r Request) (int64, error)`:                     true,
 	`func (s *Store) UpdateRequest(ctx context.Context, v Identity, list, id int64, r Request) (OwnerItem, error)`:           true,

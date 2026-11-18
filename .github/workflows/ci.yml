@@ -8,18 +8,24 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Keep the browser runner on an OS supported by pinned Playwright.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
           cache: true
+      - run: npm ci --prefix web
+      - run: npm run build --prefix web
+      - run: git diff --exit-code -- internal/web/dist
       - run: go run ./cmd/check-boundary
       - run: test -z "$(gofmt -l cmd internal)"
       - run: go vet ./...
       - run: go test -race -count=1 ./...
       - run: go test -count=10 ./internal/data -run 'TestClaimRace|TestOwnerDifferential'
+      - run: npx --prefix web playwright install --with-deps chromium
+      - run: npm run test:e2e --prefix web
   image:
     needs: test
     runs-on: ubuntu-latest
