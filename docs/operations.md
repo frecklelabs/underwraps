@@ -20,12 +20,15 @@ America/Chicago midnight boundary. The Go binary embeds the IANA timezone data.
 
 ## Schema and rollback
 
-The current schema is version 1 (`PRAGMA user_version`). New databases get all
-DDL and the version marker in a single transaction. Reopening version 1 is a
-no-op. A newer schema is refused, rather than silently opened by older code.
-Future schema changes must be ordered, transactional migrations with fixture
-upgrade tests. Prefer additive changes compatible with the previous binary;
-do not silently migrate backward, drop records or discard coordination history.
+The current schema is version 2 (`PRAGMA user_version`). Initialization runs
+v1 then v2 in one transaction; upgrading v1 runs v2 transactionally. Reopening v2
+is a no-op and newer schemas are refused. The upgrade adds fail-closed user
+settings, per-list access and default managers, and drops group sharing tables.
+Legacy group grants are **not** expanded into people grants: that would retain
+unsafe sibling visibility. Owners retain access; lists, requested items, claims,
+and coordination history remain intact. A real v1 fixture verifies this behavior.
+No deployment exists before this milestone; any future upgrade with real data
+must follow the backup procedure below and explicitly regrant access.
 
 Before any future migration, stop the single writer, copy the **whole database
 and any journal/WAL companions** into a private protected backup, and verify it
@@ -37,7 +40,7 @@ no backup/recovery endpoint.
 For binary-only rollback on compatible schema, stop the writer and restore the
 previous image digest. For incompatible migration rollback, keep the current
 database intact, restore the pre-migration backup into a separate directory,
-and start the prior binary against that copy. Verify identity/membership,
+and start the prior binary against that copy. Verify identity/per-list access,
 owner secrecy, buyer coordination, read-only archives and persistence before
 switching traffic. Restoring an older snapshot loses later writes; obtain the
 owner's decision before any destructive recovery. There are no automatic down

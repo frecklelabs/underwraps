@@ -92,7 +92,7 @@ func inspect(path string, src []byte) error {
 	}
 	if inData {
 		exports := map[string]bool{}
-		for _, name := range strings.Fields(`Identity Config User Group GroupMapping Account SignIn Request OwnerItem ViewerItem List OwnerView MemberView View Summary Page Store ErrMissing ErrArchived ErrInvalid ErrConflict Open Close Register Users SetUser Groups CreateGroup SetGroup SetMembership CreateList UpdateList ListDetail DeletedItems Lists AddRequest AddSurprise UpdateRequest DeleteRequest RestoreRequest Claim ReleaseClaim DeleteSurprise`) {
+		for _, name := range strings.Fields(`Identity Config User Person Access Sharing People SetSharing Sharing Account SignIn Request OwnerItem ViewerItem List OwnerView MemberView View Summary Page Store ErrMissing ErrArchived ErrInvalid ErrConflict Open Close Register Users SetUser CreateList UpdateList ListDetail DeletedItems Lists AddRequest AddSurprise UpdateRequest DeleteRequest RestoreRequest Claim ReleaseClaim DeleteSurprise`) {
 			exports[name] = true
 		}
 		checkExport := func(name string) error {

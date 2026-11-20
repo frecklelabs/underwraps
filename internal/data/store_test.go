@@ -22,7 +22,6 @@ type fixture struct {
 	now                                   *time.Time
 	admin, owner, member, other, outsider Identity
 	users                                 []User
-	group, foreign                        int64
 	list                                  List
 }
 
@@ -39,16 +38,10 @@ func setup(t *testing.T) *fixture {
 		must(t, err)
 		f.users = append(f.users, u)
 	}
-	f.group, err = f.s.CreateGroup(ctx, f.admin, "household-example")
+	must(t, f.s.SetUser(ctx, f.admin, f.users[1].ID, "owner", false, false, []int64{f.users[3].ID}))
+	f.list, err = f.s.CreateList(ctx, f.owner, "winter", "2030-12-25")
 	must(t, err)
-	f.foreign, err = f.s.CreateGroup(ctx, f.admin, "other-example")
-	must(t, err)
-	for _, u := range f.users[1:4] {
-		must(t, f.s.SetMembership(ctx, f.admin, f.group, u.ID, true))
-	}
-	must(t, f.s.SetMembership(ctx, f.admin, f.foreign, f.users[4].ID, true))
-	f.list, err = f.s.CreateList(ctx, f.owner, "winter", "2030-12-25", []int64{f.group})
-	must(t, err)
+	must(t, f.s.SetSharing(ctx, f.other, f.list.ID, []Access{{UserID: f.users[2].ID, Role: "viewer"}, {UserID: f.users[3].ID, Role: "manager"}}))
 	return f
 }
 func must(t *testing.T, err error) {
@@ -113,7 +106,8 @@ func TestReadMatrix(t *testing.T) {
 					*f.now = f.now.Add(24 * time.Hour)
 				}
 				for _, v := range []Identity{f.owner, f.member, f.other, f.outsider, f.admin} {
-					t.Run(v.Subject, func(t *testing.T) {
+					role := map[Identity]string{f.owner: "owner", f.member: "viewer", f.other: "manager", f.outsider: "non-viewer-sibling", f.admin: "admin"}[v]
+					t.Run(role, func(t *testing.T) {
 						allowed := v == f.owner || v == f.member || v == f.other
 						detail, err := f.s.ListDetail(ctx, v, f.list.ID, page)
 						if !allowed {
@@ -203,6 +197,15 @@ func TestOwnerDifferential(t *testing.T) {
 	if snapshot(t, f) != before {
 		t.Fatal("hidden activity changed owner responses")
 	}
+	must(t, f.s.SetSharing(ctx, f.other, f.list.ID, []Access{{UserID: f.users[3].ID, Role: "manager"}}))
+	if snapshot(t, f) != before {
+		t.Fatal("viewer removal leaked to owner responses")
+	}
+	must(t, f.s.SetSharing(ctx, f.other, f.list.ID, []Access{{UserID: f.users[2].ID, Role: "viewer"}, {UserID: f.users[3].ID, Role: "manager"}}))
+	if snapshot(t, f) != before {
+		t.Fatal("viewer regrant leaked to owner responses")
+	}
+
 	// Reset only coordination through the public API, then replay identical owner
 	// operations with and without a purchase against the same original request.
 	must(t, f.s.ReleaseClaim(ctx, f.member, f.list.ID, a.ID))
@@ -251,7 +254,7 @@ func TestPermissionsAndArchive(t *testing.T) {
 		wantErr(t, err, ErrMissing)
 		_, err = f.s.RestoreRequest(ctx, v, f.list.ID, i.ID)
 		wantErr(t, err, ErrMissing)
-		_, err = f.s.UpdateList(ctx, v, f.list.ID, "x", "2030-12-25", []int64{f.group})
+		_, err = f.s.UpdateList(ctx, v, f.list.ID, "x", "2030-12-25")
 		wantErr(t, err, ErrMissing)
 		wantErr(t, f.s.Claim(ctx, v, f.list.ID, i.ID), ErrMissing)
 		wantErr(t, f.s.ReleaseClaim(ctx, v, f.list.ID, i.ID), ErrMissing)
@@ -259,10 +262,6 @@ func TestPermissionsAndArchive(t *testing.T) {
 	}
 	wantErr(t, f.s.Claim(ctx, f.owner, f.list.ID, i.ID), ErrMissing)
 	_, err = f.s.AddSurprise(ctx, f.owner, f.list.ID, request("x"))
-	wantErr(t, err, ErrMissing)
-	_, err = f.s.CreateList(ctx, f.owner, "x", "2030-12-25", []int64{f.foreign})
-	wantErr(t, err, ErrMissing)
-	_, err = f.s.UpdateList(ctx, f.owner, f.list.ID, "x", "2030-12-25", []int64{f.foreign})
 	wantErr(t, err, ErrMissing)
 	_, err = f.s.UpdateRequest(ctx, f.owner, f.list.ID, hidden, request("x"))
 	wantErr(t, err, ErrMissing)
@@ -281,7 +280,7 @@ func TestPermissionsAndArchive(t *testing.T) {
 		"delete":   func() error { _, e := f.s.DeleteRequest(ctx, f.owner, f.list.ID, i.ID); return e },
 		"restore":  func() error { _, e := f.s.RestoreRequest(ctx, f.owner, f.list.ID, i.ID); return e },
 		"list": func() error {
-			_, e := f.s.UpdateList(ctx, f.owner, f.list.ID, "x", "2031-12-25", []int64{f.group})
+			_, e := f.s.UpdateList(ctx, f.owner, f.list.ID, "x", "2031-12-25")
 			return e
 		},
 		"claim":           func() error { return f.s.Claim(ctx, f.other, f.list.ID, i.ID) },
@@ -366,47 +365,25 @@ func TestClaimRace(t *testing.T) {
 		t.Fatalf("wins=%d conflicts=%d", wins, conflicts)
 	}
 }
-func TestAdminAndMembership(t *testing.T) {
+func TestAdminMetadata(t *testing.T) {
 	f := setup(t)
 	for _, v := range []Identity{f.owner, f.member, f.outsider} {
 		_, err := f.s.Users(ctx, v)
 		wantErr(t, err, ErrMissing)
-		_, err = f.s.Groups(ctx, v)
-		wantErr(t, err, ErrMissing)
-		_, err = f.s.CreateGroup(ctx, v, "x")
-		wantErr(t, err, ErrMissing)
-		wantErr(t, f.s.SetMembership(ctx, v, f.group, f.users[4].ID, true), ErrMissing)
-		wantErr(t, f.s.SetGroup(ctx, v, f.group, "x", true), ErrMissing)
-		wantErr(t, f.s.SetUser(ctx, v, f.users[1].ID, "x", true), ErrMissing)
+		wantErr(t, f.s.SetUser(ctx, v, f.users[1].ID, "x", true, false, nil), ErrMissing)
 	}
 	users, err := f.s.Users(ctx, f.admin)
 	must(t, err)
 	if len(users) != 5 {
 		t.Fatal(users)
 	}
-	groups, err := f.s.Groups(ctx, f.admin)
-	must(t, err)
-	if len(groups) != 2 {
-		t.Fatal(groups)
-	}
-	// Changing names does not change the issuer/subject binding.
-	must(t, f.s.SetUser(ctx, f.admin, f.users[2].ID, "renamed", false))
+	must(t, f.s.SetUser(ctx, f.admin, f.users[2].ID, "renamed", false, false, nil))
 	u, err := f.s.Register(ctx, f.member, "different")
 	must(t, err)
 	if u.ID != f.users[2].ID || u.Name != "renamed" {
 		t.Fatal(u)
 	}
-	must(t, f.s.SetMembership(ctx, f.admin, f.group, u.ID, false))
-	_, err = f.s.ListDetail(ctx, f.member, f.list.ID, page)
-	wantErr(t, err, ErrMissing)
-	must(t, f.s.SetMembership(ctx, f.admin, f.group, u.ID, true))
-	must(t, f.s.SetGroup(ctx, f.admin, f.group, "example", true))
-	_, err = f.s.ListDetail(ctx, f.member, f.list.ID, page)
-	wantErr(t, err, ErrMissing)
-	_, err = f.s.ListDetail(ctx, f.owner, f.list.ID, page)
-	must(t, err)
-	must(t, f.s.SetGroup(ctx, f.admin, f.group, "example", false))
-	must(t, f.s.SetUser(ctx, f.admin, u.ID, "renamed", true))
+	must(t, f.s.SetUser(ctx, f.admin, u.ID, "renamed", true, false, nil))
 	_, err = f.s.Register(ctx, f.member, "renamed")
 	wantErr(t, err, ErrMissing)
 	_, err = f.s.ListDetail(ctx, f.member, f.list.ID, page)
@@ -419,7 +396,7 @@ func TestCrossListAndPagination(t *testing.T) {
 	two.Priority = 9
 	j, err := f.s.AddRequest(ctx, f.owner, f.list.ID, two)
 	must(t, err)
-	foreign, err := f.s.CreateList(ctx, f.outsider, "other", "2030-12-25", []int64{f.foreign})
+	foreign, err := f.s.CreateList(ctx, f.outsider, "other", "2030-12-25")
 	must(t, err)
 	k, err := f.s.AddRequest(ctx, f.outsider, foreign.ID, request("foreign"))
 	must(t, err)
@@ -468,7 +445,7 @@ func TestPersistenceAndMigration(t *testing.T) {
 	if view.Owner.Items[0].ID != i.ID {
 		t.Fatal("lost record")
 	}
-	_, err = s.db.Exec("PRAGMA user_version=2")
+	_, err = s.db.Exec("PRAGMA user_version=3")
 	must(t, err)
 	_, err = Open(Config{Path: f.path, Timezone: "America/Chicago", Clock: time.Now})
 	if err == nil {
@@ -483,7 +460,7 @@ func TestOwnerDifferentialWorlds(t *testing.T) {
 	f := setup(t)
 	i := add(t, f, "original")
 	j := add(t, f, "second")
-	_, err := f.s.CreateList(ctx, f.owner, "later", "2030-12-26", []int64{f.group})
+	_, err := f.s.CreateList(ctx, f.owner, "later", "2030-12-26")
 	must(t, err)
 	must(t, f.s.Close())
 	raw, err := os.ReadFile(f.path)
@@ -553,7 +530,7 @@ func TestMemberCannotEditRequestsOrShares(t *testing.T) {
 		wantErr(t, err, ErrMissing)
 		_, err = f.s.RestoreRequest(ctx, v, f.list.ID, i.ID)
 		wantErr(t, err, ErrMissing)
-		_, err = f.s.UpdateList(ctx, v, f.list.ID, "x", "2030-12-25", []int64{f.group})
+		_, err = f.s.UpdateList(ctx, v, f.list.ID, "x", "2030-12-25")
 		wantErr(t, err, ErrMissing)
 	}
 	surprise, err := f.s.AddSurprise(ctx, f.member, f.list.ID, request("gift"))

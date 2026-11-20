@@ -2,9 +2,13 @@
 
 The approved product scope is a small family wish-list service. Everyone signs in
 through verified OIDC; there are no passwords or guest links. Multiple named lists
-have occasion dates and one or more configured sharing groups. Accounts bind to
-verified issuer and subject, never email. Administrators manage users and groups
-without gaining access to list contents.
+have occasion dates and explicit per-list viewers and sharing managers. Accounts bind to
+verified issuer and subject, never email. Administrators manage per-user sharing settings and default managers without
+gaining access to list contents. A required verified group gates sign-in only.
+New accounts cannot share their own lists until an admin enables that setting.
+Default managers are applied on list creation. Managers can change per-list
+grants; owners can never become viewers/managers of their own list. If an owner
+cannot share, the last manager cannot be removed. Archived sharing is frozen.
 
 Requested items have a name, link, price, note, image, quantity and owner-selected
 priority. Authorized viewers other than the owner can mark an item bought, see

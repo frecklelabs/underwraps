@@ -12,7 +12,7 @@ func (s *Store) access(ctx context.Context, v Identity, id int64) (List, int64, 
 		return List{}, 0, err
 	}
 	var l List
-	err = s.db.QueryRowContext(ctx, `SELECT id,owner_id,name,occasion,created,updated,revision FROM lists l WHERE id=? AND (owner_id=? OR EXISTS(SELECT 1 FROM shares sh JOIN groups g ON g.id=sh.group_id AND g.disabled=0 JOIN memberships m ON m.group_id=g.id AND m.active=1 WHERE sh.list_id=l.id AND sh.active=1 AND m.user_id=?))`, id, uid, uid).Scan(&l.ID, &l.OwnerID, &l.Name, &l.Occasion, &l.CreatedAt, &l.UpdatedAt, &l.Revision)
+	err = s.db.QueryRowContext(ctx, `SELECT id,owner_id,name,occasion,created,updated,revision FROM lists l WHERE id=? AND (owner_id=? OR EXISTS(SELECT 1 FROM list_access a WHERE a.list_id=l.id AND a.active=1 AND a.user_id=?))`, id, uid, uid).Scan(&l.ID, &l.OwnerID, &l.Name, &l.Occasion, &l.CreatedAt, &l.UpdatedAt, &l.Revision)
 	if err == sql.ErrNoRows {
 		return List{}, 0, ErrMissing
 	}
@@ -36,28 +36,7 @@ func validList(name, date string) bool {
 	_, err := time.Parse("2006-01-02", date)
 	return name != "" && err == nil
 }
-func (s *Store) allowedGroups(ctx context.Context, uid int64, groups []int64) error {
-	if len(groups) == 0 {
-		return ErrInvalid
-	}
-	seen := map[int64]bool{}
-	for _, g := range groups {
-		if seen[g] {
-			return ErrInvalid
-		}
-		seen[g] = true
-		var n int
-		err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM memberships m JOIN groups g ON g.id=m.group_id WHERE m.user_id=? AND m.group_id=? AND m.active=1 AND g.disabled=0`, uid, g).Scan(&n)
-		if err != nil {
-			return err
-		}
-		if n != 1 {
-			return ErrMissing
-		}
-	}
-	return nil
-}
-func (s *Store) CreateList(ctx context.Context, v Identity, name, date string, groups []int64) (List, error) {
+func (s *Store) CreateList(ctx context.Context, v Identity, name, date string) (List, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	uid, err := s.user(ctx, v)
@@ -69,9 +48,6 @@ func (s *Store) CreateList(ctx context.Context, v Identity, name, date string, g
 	}
 	if s.archived(date) {
 		return List{}, ErrArchived
-	}
-	if err = s.allowedGroups(ctx, uid, groups); err != nil {
-		return List{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -87,20 +63,18 @@ func (s *Store) CreateList(ctx context.Context, v Identity, name, date string, g
 	if err != nil {
 		return List{}, err
 	}
-	for _, g := range groups {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO shares VALUES(?,?,1)", id, g); err != nil {
-			return List{}, err
-		}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO list_access SELECT ?,d.manager_id,'manager',1 FROM default_managers d JOIN users u ON u.id=d.manager_id AND u.disabled=0 WHERE d.user_id=?", id, uid); err != nil {
+		return List{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return List{}, err
 	}
 	return List{ID: id, OwnerID: uid, Name: name, Occasion: date, CreatedAt: now, UpdatedAt: now, Revision: 1}, nil
 }
-func (s *Store) UpdateList(ctx context.Context, v Identity, id int64, name, date string, groups []int64) (List, error) {
+func (s *Store) UpdateList(ctx context.Context, v Identity, id int64, name, date string) (List, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	l, uid, err := s.writable(ctx, v, id, true)
+	l, _, err := s.writable(ctx, v, id, true)
 	if err != nil {
 		return List{}, err
 	}
@@ -110,9 +84,6 @@ func (s *Store) UpdateList(ctx context.Context, v Identity, id int64, name, date
 	if s.archived(date) {
 		return List{}, ErrArchived
 	}
-	if err = s.allowedGroups(ctx, uid, groups); err != nil {
-		return List{}, err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return List{}, err
@@ -121,14 +92,6 @@ func (s *Store) UpdateList(ctx context.Context, v Identity, id int64, name, date
 	now := s.now()
 	if _, err = tx.ExecContext(ctx, "UPDATE lists SET name=?,occasion=?,updated=?,revision=revision+1 WHERE id=?", name, date, now, id); err != nil {
 		return List{}, err
-	}
-	if _, err = tx.ExecContext(ctx, "UPDATE shares SET active=0 WHERE list_id=?", id); err != nil {
-		return List{}, err
-	}
-	for _, g := range groups {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO shares VALUES(?,?,1) ON CONFLICT(list_id,group_id) DO UPDATE SET active=1", id, g); err != nil {
-			return List{}, err
-		}
 	}
 	if err = tx.Commit(); err != nil {
 		return List{}, err
@@ -224,7 +187,7 @@ func (s *Store) Lists(ctx context.Context, v Identity, archived bool, p Page) ([
 		return nil, ErrInvalid
 	}
 	// Discovery IDs and ordering depend only on owner-visible list fields.
-	rows, err := s.db.QueryContext(ctx, `SELECT l.id FROM lists l WHERE (l.owner_id=? OR EXISTS(SELECT 1 FROM shares sh JOIN groups g ON g.id=sh.group_id AND g.disabled=0 JOIN memberships m ON m.group_id=g.id AND m.active=1 WHERE sh.list_id=l.id AND sh.active=1 AND m.user_id=?)) AND (l.occasion < ?)=? ORDER BY l.occasion,l.id LIMIT ? OFFSET ?`, uid, uid, s.clock().In(s.location).Format("2006-01-02"), archived, p.Limit, p.Offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT l.id FROM lists l WHERE (l.owner_id=? OR EXISTS(SELECT 1 FROM list_access a WHERE a.list_id=l.id AND a.active=1 AND a.user_id=?)) AND (l.occasion < ?)=? ORDER BY l.occasion,l.id LIMIT ? OFFSET ?`, uid, uid, s.clock().In(s.location).Format("2006-01-02"), archived, p.Limit, p.Offset)
 	if err != nil {
 		return nil, err
 	}

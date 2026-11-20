@@ -54,7 +54,9 @@ func newIssuer(t *testing.T) *testIssuer {
 				owner := "/authorize?" + q.Encode()
 				q.Set("choose", "second")
 				second := "/authorize?" + q.Encode()
-				_, _ = fmt.Fprintf(w, `<a href="%s">Owner</a><a href="%s">Second</a>`, owner, second)
+				q.Set("choose", "third")
+				third := "/authorize?" + q.Encode()
+				_, _ = fmt.Fprintf(w, `<a href="%s">Owner</a><a href="%s">Second</a><a href="%s">Third</a>`, owner, second, third)
 				return
 			}
 			code := randomToken()
@@ -149,7 +151,7 @@ func newFixture(t *testing.T) *fixture {
 			return time.Now().AddDate(0, 0, 10)
 		}
 		return time.Now()
-	}, Issuer: f.server.URL, Groups: []data.GroupMapping{{Claim: "fixture-family", ID: 1, Name: "Fixture family"}, {Claim: "fixture-extended", ID: 2, Name: "Fixture extended"}}, AdministratorGroups: []string{"fixture-admin"}, Administrators: []data.Identity{{Issuer: f.server.URL, Subject: "owner"}}})
+	}, Issuer: f.server.URL, RequiredGroup: "fixture-family", AdministratorGroups: []string{"fixture-admin"}, Administrators: []data.Identity{{Issuer: f.server.URL, Subject: "owner"}}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -160,6 +162,17 @@ func newFixture(t *testing.T) *fixture {
 	}
 	owner := principal{Identity: data.Identity{Issuer: f.server.URL, Subject: "owner"}, Name: "Owner", Groups: []string{"fixture-family"}}
 	second := principal{Identity: data.Identity{Issuer: f.server.URL, Subject: "second"}, Name: "Second", Groups: []string{"fixture-family"}}
+	ownerAccount, e := store.SignIn(context.Background(), owner.Identity, "Owner", owner.Groups)
+	if e != nil {
+		t.Fatal(e)
+	}
+	secondAccount, e := store.SignIn(context.Background(), second.Identity, "Second", second.Groups)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = store.SetUser(context.Background(), owner.Identity, ownerAccount.User.ID, "Owner", false, true, []int64{secondAccount.User.ID}); e != nil {
+		t.Fatal(e)
+	}
 	return &fixture{advance: advance, s: s, issuer: f, store: store, handler: s.Handler(), owner: owner, second: second}
 }
 func (f *fixture) login(t *testing.T, subject string, old ...*http.Cookie) (*http.Cookie, string) {
@@ -269,7 +282,7 @@ func TestOIDCLoginAndSessions(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = f.store.SetUser(context.Background(), f.owner.Identity, user.ID, "Owner", true); e != nil {
+	if e = f.store.SetUser(context.Background(), f.owner.Identity, user.ID, "Owner", true, false, nil); e != nil {
 		t.Fatal(e)
 	}
 	f.http(t, cookie, csrf, "lists", map[string]any{}, 403)
@@ -374,7 +387,7 @@ func TestHTTPMCPCompleteOwnerSecrecy(t *testing.T) {
 	secondCookie, secondCSRF := f.login(t, "second")
 	ownerToken := f.issuer.sign(t, f.issuer.claims("owner", "mcp"))
 	secondToken := f.issuer.sign(t, f.issuer.claims("second", "mcp"))
-	created := f.http(t, cookie, csrf, "create_list", map[string]any{"name": "Fixture occasion", "date": time.Now().AddDate(0, 0, 2).Format("2006-01-02"), "groups": []string{"1"}}, 200)
+	created := f.http(t, cookie, csrf, "create_list", map[string]any{"name": "Fixture occasion", "date": time.Now().AddDate(0, 0, 2).Format("2006-01-02")}, 200)
 	var list struct{ ID string }
 	_ = json.Unmarshal(created, &list)
 	args := map[string]any{"list": list.ID}
@@ -459,90 +472,29 @@ func TestBrowserFixture(t *testing.T) {
 	<-time.After(4 * time.Minute)
 }
 
-func TestVerifiedGroupsRevocationAndAdminIsolation(t *testing.T) {
+func TestRequiredGroupAndAdminIsolation(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	owner, e := f.store.SignIn(ctx, f.owner.Identity, "Owner", []string{"fixture-family"})
-	if e != nil || !owner.Admin || len(owner.Groups) != 1 {
-		t.Fatalf("owner mapping: %+v %v", owner, e)
+	if _, e := f.store.SignIn(ctx, f.second.Identity, "Second", nil); e != data.ErrMissing {
+		t.Fatal("missing required group accepted", e)
 	}
-	_, e = f.store.SignIn(ctx, f.second.Identity, "Second", []string{"fixture-family"})
-	if e != nil {
-		t.Fatal(e)
-	}
-	list, e := f.store.CreateList(ctx, f.owner.Identity, "Shared", time.Now().AddDate(0, 0, 2).Format("2006-01-02"), []int64{1})
-	if e != nil {
-		t.Fatal(e)
-	}
-	if _, e = f.store.ListDetail(ctx, f.second.Identity, list.ID, data.Page{Limit: 100}); e != nil {
-		t.Fatal(e)
-	}
-	if _, e = f.store.SignIn(ctx, f.second.Identity, "Second", nil); e != nil {
-		t.Fatal(e)
-	}
-	if _, e = f.store.ListDetail(ctx, f.second.Identity, list.ID, data.Page{Limit: 100}); e != data.ErrMissing {
-		t.Fatal("revoked membership retained access", e)
-	}
-	if _, e = f.store.SignIn(ctx, data.Identity{Issuer: "https://other.example.invalid", Subject: "owner"}, "Owner", []string{"fixture-family"}); e != data.ErrInvalid {
-		t.Fatal("wrong issuer provisioned", e)
-	}
-	// Even a configured administrator who is not a shared-group member has no content bypass.
-	if _, e = f.store.SignIn(ctx, f.owner.Identity, "Owner", nil); e != nil {
-		t.Fatal(e)
-	}
-	if _, e = f.store.SignIn(ctx, f.second.Identity, "Second", []string{"fixture-family"}); e != nil {
-		t.Fatal(e)
-	}
-	secondList, e := f.store.CreateList(ctx, f.second.Identity, "Second's list", time.Now().AddDate(0, 0, 2).Format("2006-01-02"), []int64{1})
-	if e != nil {
-		t.Fatal(e)
-	}
-	if _, e = f.store.ListDetail(ctx, f.owner.Identity, secondList.ID, data.Page{Limit: 100}); e != data.ErrMissing {
-		t.Fatal("admin content bypass", e)
-	}
-	if e = f.store.SetGroup(ctx, f.owner.Identity, 1, "Fixture family", true); e != nil {
-		t.Fatal(e)
-	}
-	account, e := f.store.SignIn(ctx, f.second.Identity, "Second", []string{"fixture-family"})
-	if e != nil || len(account.Groups) != 0 {
-		t.Fatal("disabled group reactivated", e)
-	}
-}
-
-func TestMultipleSharingGroupsAndClaimAdminMapping(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	account, e := f.store.SignIn(ctx, f.owner.Identity, "Owner", []string{"fixture-family", "fixture-extended"})
-	if e != nil || len(account.Groups) != 2 {
-		t.Fatal("multiple group mapping failed", e)
-	}
-	_, e = f.store.SignIn(ctx, f.second.Identity, "Second", []string{"fixture-extended"})
-	if e != nil {
-		t.Fatal(e)
-	}
-	list, e := f.store.CreateList(ctx, f.owner.Identity, "Both groups", time.Now().AddDate(0, 0, 2).Format("2006-01-02"), []int64{1, 2})
-	if e != nil {
-		t.Fatal(e)
-	}
-	if _, e = f.store.ListDetail(ctx, f.second.Identity, list.ID, data.Page{Limit: 100}); e != nil {
-		t.Fatal("second shared group not authorized", e)
-	}
-	account, e = f.store.SignIn(ctx, f.second.Identity, "Second", []string{"fixture-admin"})
+	account, e := f.store.SignIn(ctx, f.second.Identity, "Second", []string{"fixture-family", "fixture-admin"})
 	if e != nil || !account.Admin {
-		t.Fatal("claim admin mapping failed", e)
+		t.Fatal(account, e)
 	}
-	if _, e = f.store.Users(ctx, f.second.Identity); e != nil {
-		t.Fatal("claim admin cannot manage metadata", e)
+	list, e := f.store.CreateList(ctx, f.second.Identity, "Private", time.Now().AddDate(0, 0, 2).Format("2006-01-02"))
+	if e != nil {
+		t.Fatal(e)
 	}
-	if _, e = f.store.ListDetail(ctx, f.second.Identity, list.ID, data.Page{Limit: 100}); e != data.ErrMissing {
-		t.Fatal("claim admin bypassed content sharing", e)
+	if _, e = f.store.ListDetail(ctx, f.owner.Identity, list.ID, data.Page{Limit: 100}); e != data.ErrMissing {
+		t.Fatal("admin bypass", e)
 	}
-	account, e = f.store.SignIn(ctx, f.second.Identity, "Second", nil)
+	account, e = f.store.SignIn(ctx, f.second.Identity, "Second", []string{"fixture-family"})
 	if e != nil || account.Admin {
-		t.Fatal("claim admin mapping not revoked", e)
+		t.Fatal("admin revocation", account, e)
 	}
 	if _, e = f.store.Users(ctx, f.second.Identity); e != data.ErrMissing {
-		t.Fatal("revoked claim admin retained metadata access", e)
+		t.Fatal(e)
 	}
 }
 
@@ -560,5 +512,127 @@ func TestInsecureConfigurationRejected(t *testing.T) {
 		if _, e := New(context.Background(), c, f.store); e == nil {
 			t.Fatal("unsafe config accepted")
 		}
+	}
+}
+
+func TestSharingCallerScopedHTTPAndMCP(t *testing.T) {
+	f := newFixture(t)
+	ownerCookie, ownerCSRF := f.login(t, "owner")
+	managerCookie, managerCSRF := f.login(t, "second")
+	thirdCookie, thirdCSRF := f.login(t, "third")
+	ownerToken := f.issuer.sign(t, f.issuer.claims("owner", "mcp"))
+	managerToken := f.issuer.sign(t, f.issuer.claims("second", "mcp"))
+	thirdToken := f.issuer.sign(t, f.issuer.claims("third", "mcp"))
+	raw := f.http(t, ownerCookie, ownerCSRF, "create_list", map[string]any{"name": "Private", "date": time.Now().AddDate(0, 0, 2).Format("2006-01-02")}, 200)
+	var list struct{ ID string }
+	if e := json.Unmarshal(raw, &list); e != nil {
+		t.Fatal(e)
+	}
+	people := f.http(t, thirdCookie, thirdCSRF, "people", map[string]any{}, 200)
+	if bytes.Contains(people, []byte("Identity")) || bytes.Contains(people, []byte("Subject")) {
+		t.Fatal("picker leaks identities")
+	}
+	var persons []struct{ ID, Name string }
+	_ = json.Unmarshal(people, &persons)
+	var second, third string
+	for _, p := range persons {
+		if p.Name == "Second" {
+			second = p.ID
+		}
+		if p.Name == "Third" {
+			third = p.ID
+		}
+	}
+	if second == "" || third == "" {
+		t.Fatal("missing people")
+	}
+	access := []map[string]string{{"user": second, "role": "manager"}, {"user": third, "role": "viewer"}}
+	args := map[string]any{"list": list.ID, "access": access}
+	f.http(t, thirdCookie, thirdCSRF, "set_sharing", args, 404)
+	result := f.mcp(t, managerToken, "set_sharing", args, 200)
+	if bytes.Contains(result, []byte(`"isError":true`)) {
+		t.Fatal(string(result))
+	}
+	f.http(t, thirdCookie, thirdCSRF, "detail", map[string]any{"list": list.ID}, 200)
+	f.http(t, thirdCookie, thirdCSRF, "set_sharing", args, 404)
+	f.http(t, managerCookie, managerCSRF, "set_sharing", map[string]any{"list": list.ID, "access": access[:1]}, 200)
+	for _, op := range []string{"detail", "sharing", "claim", "release_claim", "delete_surprise", "add_surprise", "update_request", "delete_request", "restore_request"} {
+		var firstHTTP, firstMCP []byte
+		for _, l := range []string{list.ID, "999999"} {
+			args := map[string]any{"list": l, "item": "999"}
+			if op == "add_surprise" || op == "update_request" {
+				args["request"] = data.Request{Name: "Invalid URL", Link: "file:///invalid", Quantity: 1}
+			}
+			h := f.http(t, thirdCookie, thirdCSRF, op, args, 404)
+			m := f.mcp(t, thirdToken, op, args, 200)
+			if !bytes.Contains(m, []byte("not found")) {
+				t.Fatal(string(m))
+			}
+			if firstHTTP != nil && (!bytes.Equal(firstHTTP, h) || !bytes.Equal(firstMCP, m)) {
+				t.Fatal("missing/unauthorized transport errors differ", op)
+			}
+			firstHTTP = h
+			firstMCP = m
+		}
+	}
+	// Metadata admin cannot add themselves as a default manager over either transport.
+	f.http(t, ownerCookie, ownerCSRF, "set_user", map[string]any{"user": third, "name": "Third", "default_managers": []string{"1"}}, 400)
+	r := f.mcp(t, ownerToken, "set_user", map[string]any{"user": third, "name": "Third", "default_managers": []string{"1"}}, 200)
+	if !bytes.Contains(r, []byte("invalid input")) {
+		t.Fatal(string(r))
+	}
+}
+
+func TestSetUserCannotDisableLastManager(t *testing.T) {
+	f := newFixture(t)
+	adminCookie, adminCSRF := f.login(t, "owner")
+	managerCookie, managerCSRF := f.login(t, "second")
+	childCookie, childCSRF := f.login(t, "third")
+	adminToken := f.issuer.sign(t, f.issuer.claims("owner", "mcp"))
+	managerToken := f.issuer.sign(t, f.issuer.claims("second", "mcp"))
+	people := f.http(t, adminCookie, adminCSRF, "people", map[string]any{}, 200)
+	var persons []struct{ ID, Name string }
+	if err := json.Unmarshal(people, &persons); err != nil {
+		t.Fatal(err)
+	}
+	var manager, child string
+	for _, p := range persons {
+		if p.Name == "Second" {
+			manager = p.ID
+		}
+		if p.Name == "Third" {
+			child = p.ID
+		}
+	}
+	if manager == "" || child == "" {
+		t.Fatal("missing people")
+	}
+	f.http(t, adminCookie, adminCSRF, "set_user", map[string]any{"user": child, "name": "Third", "default_managers": []string{manager}}, 200)
+	raw := f.http(t, childCookie, childCSRF, "create_list", map[string]any{"name": "Private", "date": time.Now().AddDate(0, 0, 2).Format("2006-01-02")}, 200)
+	var list struct{ ID string }
+	if err := json.Unmarshal(raw, &list); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"user": manager, "name": "Changed", "disabled": true}
+	// A non-admin cannot change account settings; admin gets the same generic
+	// validation error over either transport without learning any list content.
+	f.http(t, managerCookie, managerCSRF, "set_user", args, 404)
+	if r := f.mcp(t, managerToken, "set_user", args, 200); !bytes.Contains(r, []byte("not found")) {
+		t.Fatal(string(r))
+	}
+	before := f.http(t, adminCookie, adminCSRF, "users", map[string]any{}, 200)
+	f.http(t, adminCookie, adminCSRF, "set_user", args, 400)
+	if r := f.mcp(t, adminToken, "set_user", args, 200); !bytes.Contains(r, []byte("invalid input")) {
+		t.Fatal(string(r))
+	}
+	after := f.http(t, adminCookie, adminCSRF, "users", map[string]any{}, 200)
+	if !bytes.Equal(before, after) {
+		t.Fatal("rejected account settings changed metadata")
+	}
+	f.http(t, managerCookie, managerCSRF, "set_sharing", map[string]any{"list": list.ID, "access": []map[string]string{{"user": manager, "role": "manager"}}}, 200)
+	f.http(t, childCookie, childCSRF, "set_sharing", map[string]any{"list": list.ID}, 404)
+	f.http(t, adminCookie, adminCSRF, "detail", map[string]any{"list": list.ID}, 404)
+	if r := f.mcp(t, adminToken, "detail", map[string]any{"list": list.ID}, 200); !bytes.Contains(r, []byte("not found")) {
+		t.Fatal(string(r))
 	}
 }

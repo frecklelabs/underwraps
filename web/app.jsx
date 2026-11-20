@@ -48,7 +48,8 @@ function App() {
     [request, setRequest] = useState(empty),
     [showForm, setShowForm] = useState(false),
     [users, setUsers] = useState(null),
-    [groups, setGroups] = useState(null);
+    [people, setPeople] = useState([]),
+    [sharing, setSharing] = useState(null);
   const body = view?.owner || view?.member;
   const owner = !!view?.owner;
   async function run(fn) {
@@ -73,6 +74,8 @@ function App() {
       limit: 20,
     });
     setView(del ? { owner: v } : v);
+    setSharing(await api("sharing", { list: id }));
+    setPeople(await api("people"));
   }
   useEffect(() => {
     api("me")
@@ -212,7 +215,6 @@ function App() {
                   await api("create_list", {
                     name: f.get("name"),
                     date: f.get("date"),
-                    groups: f.getAll("groups"),
                   });
                   form.reset();
                   await loadLists();
@@ -227,15 +229,6 @@ function App() {
                 Occasion date
                 <input name="date" type="date" required />
               </label>
-              <fieldset>
-                <legend>Share with</legend>
-                {me.Groups.map((g) => (
-                  <label className="check" key={g.ID}>
-                    <input type="checkbox" name="groups" value={g.ID} />
-                    {g.Name}
-                  </label>
-                ))}
-              </fieldset>
               <button>Create list</button>
             </form>
           </details>
@@ -243,6 +236,78 @@ function App() {
         {body && (
           <section aria-label="Selected list">
             <h2>{body.List.Name}</h2>
+            {sharing && (
+              <section aria-label="Who can see this">
+                <h3>Who can see this</h3>
+                <p>
+                  The owner always sees their requests. Viewers and sharing
+                  managers can coordinate gifts.
+                </p>
+                {sharing.CanEdit ? (
+                  <form
+                    key={JSON.stringify(sharing.Access)}
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const f = new FormData(e.currentTarget);
+                      const access = people
+                        .filter((p) => f.get(p.ID))
+                        .map((p) => ({ user: p.ID, role: f.get(p.ID) }));
+                      run(async () => {
+                        await api("set_sharing", {
+                          list: body.List.ID,
+                          access,
+                        });
+                        const retainsAccess =
+                          owner || access.some((a) => a.user === me.User.ID);
+                        if (retainsAccess)
+                          setSharing(
+                            await api("sharing", { list: body.List.ID }),
+                          );
+                        else {
+                          setView(null);
+                          setSharing(null);
+                        }
+                        await loadLists();
+                      });
+                    }}
+                  >
+                    {people
+                      .filter((p) => p.ID !== body.List.OwnerID)
+                      .map((p) => (
+                        <label key={p.ID}>
+                          {p.Name}
+                          <select
+                            name={p.ID}
+                            aria-label={"Access for " + p.Name}
+                            defaultValue={
+                              sharing.Access.find((a) => a.UserID === p.ID)
+                                ?.Role || ""
+                            }
+                          >
+                            <option value="">No access</option>
+                            <option value="viewer">Viewer</option>
+                            <option value="manager">Sharing manager</option>
+                          </select>
+                        </label>
+                      ))}
+                    <button>Save sharing</button>
+                  </form>
+                ) : (
+                  <>
+                    <p>Sharing is read only.</p>
+                    <ul>
+                      {sharing.Access.map((a) => (
+                        <li key={a.UserID}>
+                          {people.find((p) => p.ID === a.UserID)?.Name} ·{" "}
+                          {a.Role === "manager" ? "Sharing manager" : "Viewer"}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </section>
+            )}
+
             <p>
               {body.List.Occasion}
               {body.List.Archived ? " · Read only" : ""} · {body.Count} items
@@ -566,7 +631,6 @@ function App() {
                         list: body.List.ID,
                         name: f.get("name"),
                         date: f.get("date"),
-                        groups: f.getAll("groups"),
                       });
                       await load();
                       await loadLists();
@@ -586,15 +650,6 @@ function App() {
                       required
                     />
                   </label>
-                  <fieldset>
-                    <legend>Replace sharing groups</legend>
-                    {me.Groups.map((g) => (
-                      <label className="check" key={g.ID}>
-                        <input type="checkbox" name="groups" value={g.ID} />
-                        {g.Name}
-                      </label>
-                    ))}
-                  </fieldset>
                   <button>Save list</button>
                 </form>
               </details>
@@ -605,59 +660,76 @@ function App() {
           <details>
             <summary>Administration</summary>
             <p>
-              Manage accounts and groups. List access follows the same sharing
-              rules for everyone.
+              Account settings apply to new lists. Administration grants no list
+              access.
             </p>
             <button
               onClick={() =>
                 run(async () => {
                   setUsers(await api("users"));
-                  setGroups(await api("groups"));
+                  setPeople(await api("people"));
                 })
               }
             >
-              Load accounts and groups
+              Load accounts
             </button>
             {users?.map((u) => (
-              <div className="row" key={u.ID}>
-                <span>
-                  {u.Name}
-                  {u.Disabled ? " · Disabled" : ""}
-                </span>
-                <button
-                  onClick={() =>
-                    run(async () => {
-                      await api("set_user", {
-                        user: u.ID,
-                        name: u.Name,
-                        disabled: !u.Disabled,
-                      });
-                      setUsers(await api("users"));
-                    })
-                  }
-                >
-                  {u.Disabled ? "Enable" : "Disable"} {u.Name}
-                </button>
-              </div>
-            ))}
-            {groups?.map((g) => (
-              <div className="row" key={g.ID}>
-                <span>{g.Name}</span>
-                <button
-                  onClick={() =>
-                    run(async () => {
-                      await api("set_group", {
-                        group: g.ID,
-                        name: g.Name,
-                        disabled: !g.Disabled,
-                      });
-                      setGroups(await api("groups"));
-                    })
-                  }
-                >
-                  {g.Disabled ? "Enable" : "Disable"} {g.Name}
-                </button>
-              </div>
+              <form
+                key={u.ID}
+                aria-label={"Settings for " + u.Name}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const f = new FormData(e.currentTarget);
+                  run(async () => {
+                    await api("set_user", {
+                      user: u.ID,
+                      name: f.get("name"),
+                      disabled: f.has("disabled"),
+                      can_share_own: f.has("can_share_own"),
+                      default_managers: f.getAll("managers"),
+                    });
+                    setUsers(await api("users"));
+                  });
+                }}
+              >
+                <label>
+                  Display name
+                  <input name="name" defaultValue={u.Name} required />
+                </label>
+                <label className="check">
+                  <input
+                    name="disabled"
+                    type="checkbox"
+                    defaultChecked={u.Disabled}
+                  />
+                  Disabled
+                </label>
+                <label className="check">
+                  <input
+                    name="can_share_own"
+                    type="checkbox"
+                    defaultChecked={u.CanShareOwn}
+                  />
+                  Can share own lists
+                </label>
+                <fieldset>
+                  <legend>Default sharing managers for {u.Name}</legend>
+                  {people
+                    .filter((p) => p.ID !== u.ID && p.ID !== me.User.ID)
+                    .map((p) => (
+                      <label className="check" key={p.ID}>
+                        <input
+                          type="checkbox"
+                          name="managers"
+                          value={p.ID}
+                          defaultChecked={u.DefaultManagers.includes(p.ID)}
+                        />
+                        {p.Name}
+                      </label>
+                    ))}
+                </fieldset>
+                <button>Save settings for {u.Name}</button>
+              </form>
             ))}
           </details>
         )}

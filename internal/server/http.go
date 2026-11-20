@@ -154,16 +154,17 @@ func toolError(message string) *mcp.CallToolResult {
 func toolSchema() any {
 	// Strict decoding also rejects unknown identity arguments when a client skips schema validation.
 	props := map[string]any{}
-	for _, k := range []string{"list", "item", "name", "date", "user", "group"} {
+	for _, k := range []string{"list", "item", "name", "date", "user"} {
 		props[k] = map[string]string{"type": "string"}
 	}
-	for _, k := range []string{"archived", "disabled", "active"} {
+	for _, k := range []string{"archived", "disabled", "can_share_own"} {
 		props[k] = map[string]string{"type": "boolean"}
 	}
 	for _, k := range []string{"offset", "limit"} {
 		props[k] = map[string]string{"type": "integer"}
 	}
-	props["groups"] = map[string]any{"type": "array", "items": map[string]string{"type": "string"}}
+	props["default_managers"] = map[string]any{"type": "array", "items": map[string]string{"type": "string"}}
+	props["access"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"user": map[string]string{"type": "string"}, "role": map[string]any{"type": "string", "enum": []string{"viewer", "manager"}}}, "required": []string{"user", "role"}, "additionalProperties": false}}
 	props["request"] = map[string]any{"type": "object"}
 	return map[string]any{"type": "object", "properties": props, "additionalProperties": false}
 }

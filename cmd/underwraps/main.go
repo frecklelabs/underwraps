@@ -19,11 +19,10 @@ func main() {
 	listen := flag.String("listen", ":8080", "HTTP listener behind TLS ingress")
 	flag.Parse()
 	// Configuration is supplied privately. It never enters the embedded UI bundle.
-	var groups []data.GroupMapping
 	var admins []data.Identity
 	var adminGroups []string
 	var scopes []string
-	for raw, dst := range map[string]any{"UW_GROUPS": &groups, "UW_ADMINS": &admins, "UW_ADMIN_GROUPS": &adminGroups, "UW_SCOPES": &scopes} {
+	for raw, dst := range map[string]any{"UW_ADMINS": &admins, "UW_ADMIN_GROUPS": &adminGroups, "UW_SCOPES": &scopes} {
 		if v := os.Getenv(raw); v != "" {
 			if json.Unmarshal([]byte(v), dst) != nil {
 				log.Fatal("invalid " + raw)
@@ -31,7 +30,7 @@ func main() {
 		}
 	}
 	issuer := os.Getenv("UW_ISSUER")
-	store, err := data.Open(data.Config{Path: *path, Timezone: *zone, Clock: time.Now, Issuer: issuer, Groups: groups, Administrators: admins, AdministratorGroups: adminGroups})
+	store, err := data.Open(data.Config{Path: *path, Timezone: *zone, Clock: time.Now, Issuer: issuer, RequiredGroup: os.Getenv("UW_REQUIRED_GROUP"), Administrators: admins, AdministratorGroups: adminGroups})
 	if err != nil {
 		log.Fatal("database initialization failed")
 	}

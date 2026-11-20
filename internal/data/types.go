@@ -24,19 +24,16 @@ type Config struct {
 	Clock               func() time.Time
 	Administrators      []Identity
 	Issuer              string
-	Groups              []GroupMapping
+	RequiredGroup       string
 	AdministratorGroups []string
 }
 type User struct {
-	ID       int64
-	Identity Identity
-	Name     string
-	Disabled bool
-}
-type Group struct {
-	ID       int64
-	Name     string
-	Disabled bool
+	ID              int64
+	Identity        Identity
+	Name            string
+	Disabled        bool
+	CanShareOwn     bool
+	DefaultManagers []int64
 }
 type Request struct {
 	Name     string
@@ -102,4 +99,18 @@ type Summary struct {
 type Page struct {
 	Offset int
 	Limit  int
+}
+
+// Person exposes only picker metadata, never identities or content.
+type Person struct {
+	ID   int64
+	Name string
+}
+type Access struct {
+	UserID int64
+	Role   string
+}
+type Sharing struct {
+	Access  []Access
+	CanEdit bool
 }
