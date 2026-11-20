@@ -1,4 +1,4 @@
-# Data boundary and schema (schema version 1)
+# Data boundary and schema (schema version 2)
 
 `internal/data` alone imports the SQLite driver and `database/sql`, opens the file,
 and runs migrations. `Store.db` is unexported. No operation returns SQL, handles,
@@ -19,17 +19,16 @@ review; it is not a sandbox against someone editing the guard itself.
 
 | Record | Key and purpose |
 | --- | --- |
-| users | Integer ID; unique verified issuer + subject; display name, disabled marker |
-| groups | Configured group ID/name and disabled marker |
-| memberships | Group/user pair and active marker |
+| users | Integer ID; unique verified issuer + subject; display name, disabled marker, can_share_own (default off) |
+| default_managers | User/manager pair; applied to future lists |
 | lists | ID, owner, name, occasion date, owner-visible creation/update times and revision |
-| shares | List/group pair and active marker |
+| list_access | List/user pair, viewer or manager role, active marker |
 | items | Random 63-bit ID, list, creator, surprise flag, original requested fields, priority, creation/update times, revision, deleted marker |
 | claims | Item key, buyer and active marker; an atomic upsert wins only when unclaimed |
 | coordination | Append-only item/actor/action/time history of claim and release transitions |
 
 Foreign keys are enabled. Schema initialization and the version marker are one
-transaction. No physical record deletes are used. List archive status is computed
+transaction. Content is retained with soft deletion. Default-manager settings are replaced; obsolete group tables are removed by migration. List archive status is computed
 from the injected clock in the configured timezone: the occasion remains writable
 through 23:59:59 local time and archives at the following midnight. Moving an
 already archived list forward is rejected too.
@@ -40,20 +39,22 @@ The only lifecycle operations are `Open(Config)` and `Close()`.
 | Operations | Permission and result |
 | --- | --- |
 | Register | Registers only caller's verified identity; cannot reactivate a disabled user |
-| Users, Groups | Configured, active administrators only; user/group metadata, never content |
-| SetUser, CreateGroup, SetGroup, SetMembership | Same admin requirement; disabled/active markers retain records |
-| CreateList | Caller owns it and must be an active member of every shared group |
-| UpdateList | Active-list owner; same sharing checks; replaces shares using active markers |
+| Users | Active administrators only; user metadata/settings, never content |
+| SetUser | Same admin requirement; replaces user settings and defaults |
+| People | Signed-in caller; IDs/display names only |
+| Sharing, SetSharing | Authorized caller; grants readable to owner/viewers, editable only by managers or enabled owner; frozen on archive |
+| CreateList | Caller owns it; copies enabled default managers |
+| UpdateList | Active-list owner; changes request metadata, not access |
 | Lists | Authorized discovery, active/archive filter, summary counts, stable occasion/ID order, bounded offset/limit |
-| ListDetail | Authorized owner or active member of an active shared group; priority descending then item ID ascending |
+| ListDetail | Owner or active per-list viewer/manager; priority descending then item ID ascending |
 | DeletedItems | Owner only; original requested-item fields, no coordination projection |
 | AddRequest, UpdateRequest, DeleteRequest, RestoreRequest | Active-list owner; bounded to list and requested-item ID; return OwnerItem |
 | AddSurprise | Active-list authorized non-owner; returns new hidden ID |
 | Claim, ReleaseClaim | Active-list authorized non-owner; self-claim rejected; only buyer can release |
 | DeleteSurprise | Active-list creator, still authorized non-owner; soft deletion |
 
-A list owner can access their own list even if their group membership changes.
-Other viewers need a current membership and active share/group on every operation.
+List access requires an enabled account and either ownership or an active
+per-list access row. Sign-in separately requires the configured verified group.
 Admin status grants no content bypass. Unknown, unauthorized, cross-list and
 hidden IDs use the same `ErrMissing`. Visibility is checked before page/input
 validation. A known authorized archived list returns `ErrArchived` on mutations;
@@ -73,14 +74,15 @@ Random item IDs avoid leaking hidden inserts through sequence gaps.
 
 Tests use real temporary on-disk SQLite databases. The read matrix covers owner,
 members, non-member and non-member admin, each item state, and active/archive
-status. Additional tests cover discovery/counts/pages/order, cross-group/list IDs,
-membership revocation, admin isolation, archive midnight, buy races across two
+status. Additional tests cover discovery/counts/pages/order, cross-list IDs,
+viewer revocation, admin isolation, archive midnight, buy races across two
 Store instances, persistence and migrations. Differential tests clone identical
 on-disk starting worlds and compare complete serialized owner responses and
 mutation/error results with and without hidden purchases and surprises.
 
-M2 adds `SignIn(ctx, viewer, name, verifiedGroups)` and configured issuer/group/
-admin mappings. It creates only the verified caller and reconciles their
-configured memberships without reactivating disabled users or groups. See
-[runtime setup](runtime.md). Member-only DTOs now include buyer display name and
-surprise creator ID; the owner DTO remains unchanged.
+`SignIn(ctx, viewer, name, verifiedGroups)` requires the configured issuer and
+required group, creates only the verified caller, and reconciles metadata-admin
+mapping. It never grants list visibility. See [runtime setup](runtime.md).
+Viewer DTOs include buyer display name and surprise creator ID; owner DTOs are
+unchanged. Tests include separate viewer/manager roles, non-viewer siblings,
+metadata admins, removed viewers' purchases, and a v1 upgrade fixture.

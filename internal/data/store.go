@@ -21,7 +21,7 @@ type Store struct {
 	admins        map[Identity]bool
 	staticAdmins  map[Identity]bool
 	issuer        string
-	groupMappings []GroupMapping
+	requiredGroup string
 	adminGroups   []string
 }
 
@@ -51,17 +51,9 @@ func Open(c Config) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, location: loc, clock: c.Clock, admins: map[Identity]bool{}}
 	s.issuer = c.Issuer
-	s.groupMappings = append([]GroupMapping(nil), c.Groups...)
+	s.requiredGroup = c.RequiredGroup
 	s.adminGroups = append([]string(nil), c.AdministratorGroups...)
 	s.staticAdmins = map[Identity]bool{}
-	seenGroups := map[int64]bool{}
-	for _, g := range c.Groups {
-		if g.ID <= 0 || g.Claim == "" || g.Name == "" || seenGroups[g.ID] {
-			db.Close()
-			return nil, ErrInvalid
-		}
-		seenGroups[g.ID] = true
-	}
 	for _, id := range c.Administrators {
 		if !validIdentity(id) {
 			db.Close()
@@ -87,10 +79,10 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
-		return fmt.Errorf("database schema %d is newer than supported schema 1", version)
+	if version > 2 {
+		return fmt.Errorf("database schema %d is newer than supported schema 2", version)
 	}
-	if version == 1 {
+	if version == 2 {
 		return nil
 	}
 	tx, err := s.db.Begin()
@@ -98,7 +90,13 @@ func (s *Store) migrate() error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(schema)
+	if version == 0 {
+		_, err = tx.Exec(schema)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = tx.Exec(schemaV2)
 	if err != nil {
 		return err
 	}
@@ -154,9 +152,11 @@ func (s *Store) Register(ctx context.Context, v Identity, name string) (User, er
 	if err != nil {
 		return User{}, err
 	}
-	var stored string
-	err = s.db.QueryRowContext(ctx, "SELECT name FROM users WHERE id=?", id).Scan(&stored)
-	return User{ID: id, Identity: v, Name: stored}, err
+	var u User
+	u.ID = id
+	u.Identity = v
+	err = s.db.QueryRowContext(ctx, "SELECT name,can_share_own FROM users WHERE id=?", id).Scan(&u.Name, &u.CanShareOwn)
+	return u, err
 }
 func (s *Store) Users(ctx context.Context, v Identity) ([]User, error) {
 	s.mu.Lock()
@@ -164,7 +164,7 @@ func (s *Store) Users(ctx context.Context, v Identity) ([]User, error) {
 	if err := s.admin(ctx, v); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT id,issuer,subject,name,disabled FROM users ORDER BY id")
+	rows, err := s.db.QueryContext(ctx, "SELECT id,issuer,subject,name,disabled,can_share_own FROM users ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -172,14 +172,38 @@ func (s *Store) Users(ctx context.Context, v Identity) ([]User, error) {
 	out := []User{}
 	for rows.Next() {
 		var u User
-		if err = rows.Scan(&u.ID, &u.Identity.Issuer, &u.Identity.Subject, &u.Name, &u.Disabled); err != nil {
+		if err = rows.Scan(&u.ID, &u.Identity.Issuer, &u.Identity.Subject, &u.Name, &u.Disabled, &u.CanShareOwn); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		out[i].DefaultManagers = []int64{}
+		rs, e := s.db.QueryContext(ctx, "SELECT manager_id FROM default_managers WHERE user_id=? ORDER BY manager_id", out[i].ID)
+		if e != nil {
+			return nil, e
+		}
+		for rs.Next() {
+			var id int64
+			if e = rs.Scan(&id); e != nil {
+				rs.Close()
+				return nil, e
+			}
+			out[i].DefaultManagers = append(out[i].DefaultManagers, id)
+		}
+		e = rs.Err()
+		rs.Close()
+		if e != nil {
+			return nil, e
+		}
+	}
+	return out, nil
 }
-func (s *Store) SetUser(ctx context.Context, v Identity, id int64, name string, disabled bool) error {
+func (s *Store) SetUser(ctx context.Context, v Identity, id int64, name string, disabled, canShareOwn bool, managers []int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.admin(ctx, v); err != nil {
@@ -188,8 +212,65 @@ func (s *Store) SetUser(ctx context.Context, v Identity, id int64, name string, 
 	if name == "" {
 		return ErrInvalid
 	}
-	r, err := s.db.ExecContext(ctx, "UPDATE users SET name=?,disabled=? WHERE id=?", name, disabled, id)
-	return changed(r, err)
+	actor, err := s.user(ctx, v)
+	if err != nil {
+		return err
+	}
+	seen := map[int64]bool{}
+	for _, m := range managers {
+		if m == id || m == actor || seen[m] {
+			return ErrInvalid
+		}
+		seen[m] = true
+		var n int
+		if err = s.db.QueryRowContext(ctx, "SELECT count(*) FROM users WHERE id=? AND disabled=0", m).Scan(&n); err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrInvalid
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if disabled {
+		// Account settings must not bypass the last-manager sharing guard. Check
+		// every affected list, and keep the rejection independent of its content.
+		var orphaned bool
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM list_access a
+			JOIN users target ON target.id=a.user_id
+			JOIN lists l ON l.id=a.list_id
+			JOIN users owner ON owner.id=l.owner_id
+			WHERE a.user_id=? AND target.disabled=0 AND a.active=1 AND a.role='manager'
+			AND owner.can_share_own=0
+			AND NOT EXISTS (
+				SELECT 1 FROM list_access other JOIN users u ON u.id=other.user_id
+				WHERE other.list_id=a.list_id AND other.user_id!=a.user_id
+				AND other.active=1 AND other.role='manager' AND u.disabled=0
+			))`, id).Scan(&orphaned)
+		if err != nil {
+			return err
+		}
+		if orphaned {
+			return ErrInvalid
+		}
+	}
+	r, err := tx.ExecContext(ctx, "UPDATE users SET name=?,disabled=?,can_share_own=? WHERE id=?", name, disabled, canShareOwn, id)
+	if err = changed(r, err); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM default_managers WHERE user_id=?", id); err != nil {
+		return err
+	}
+	for _, m := range managers {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO default_managers VALUES(?,?)", id, m); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 func changed(r sql.Result, err error) error {
 	if err != nil {
@@ -201,67 +282,17 @@ func changed(r sql.Result, err error) error {
 	}
 	return err
 }
-func (s *Store) Groups(ctx context.Context, v Identity) ([]Group, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.admin(ctx, v); err != nil {
-		return nil, err
-	}
-	rows, err := s.db.QueryContext(ctx, "SELECT id,name,disabled FROM groups ORDER BY id")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Group{}
-	for rows.Next() {
-		var g Group
-		if err = rows.Scan(&g.ID, &g.Name, &g.Disabled); err != nil {
-			return nil, err
-		}
-		out = append(out, g)
-	}
-	return out, rows.Err()
-}
-func (s *Store) CreateGroup(ctx context.Context, v Identity, name string) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.admin(ctx, v); err != nil {
-		return 0, err
-	}
-	if name == "" {
-		return 0, ErrInvalid
-	}
-	r, err := s.db.ExecContext(ctx, "INSERT INTO groups(name) VALUES(?)", name)
-	if err != nil {
-		return 0, err
-	}
-	return r.LastInsertId()
-}
-func (s *Store) SetGroup(ctx context.Context, v Identity, id int64, name string, disabled bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.admin(ctx, v); err != nil {
-		return err
-	}
-	if name == "" {
-		return ErrInvalid
-	}
-	r, err := s.db.ExecContext(ctx, "UPDATE groups SET name=?,disabled=? WHERE id=?", name, disabled, id)
-	return changed(r, err)
-}
-func (s *Store) SetMembership(ctx context.Context, v Identity, group, user int64, active bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.admin(ctx, v); err != nil {
-		return err
-	}
-	var n int
-	if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM groups g,users u WHERE g.id=? AND u.id=?", group, user).Scan(&n); err != nil {
-		return err
-	}
-	if n != 1 {
-		return ErrMissing
-	}
-	_, err := s.db.ExecContext(ctx, "INSERT INTO memberships VALUES(?,?,?) ON CONFLICT(group_id,user_id) DO UPDATE SET active=excluded.active", group, user, active)
-	return err
-}
+
+// Legacy group grants are deliberately not expanded into per-person access: the
+// old sibling visibility is unsafe. Owners retain lists; new grants are explicit.
+const schemaV2 = `
+ALTER TABLE users ADD COLUMN can_share_own INTEGER NOT NULL DEFAULT 0 CHECK(can_share_own IN (0,1));
+CREATE TABLE list_access(list_id INTEGER NOT NULL REFERENCES lists(id),user_id INTEGER NOT NULL REFERENCES users(id),role TEXT NOT NULL CHECK(role IN ('viewer','manager')),active INTEGER NOT NULL CHECK(active IN (0,1)),PRIMARY KEY(list_id,user_id));
+CREATE TABLE default_managers(user_id INTEGER NOT NULL REFERENCES users(id),manager_id INTEGER NOT NULL REFERENCES users(id),PRIMARY KEY(user_id,manager_id),CHECK(user_id != manager_id));
+CREATE TRIGGER access_not_owner BEFORE INSERT ON list_access WHEN NEW.user_id=(SELECT owner_id FROM lists WHERE id=NEW.list_id) BEGIN SELECT RAISE(ABORT,'owner access'); END;
+CREATE TRIGGER access_not_owner_update BEFORE UPDATE ON list_access WHEN NEW.user_id=(SELECT owner_id FROM lists WHERE id=NEW.list_id) BEGIN SELECT RAISE(ABORT,'owner access'); END;
+DROP TABLE shares;
+DROP TABLE memberships;
+DROP TABLE groups;
+PRAGMA user_version=2;
+`

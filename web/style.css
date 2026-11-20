@@ -107,6 +107,7 @@ label {
   margin: 0.6rem 0;
 }
 input,
+select,
 textarea {
   display: block;
   width: 100%;
@@ -151,7 +152,8 @@ a {
 }
 button:focus-visible,
 a:focus-visible,
-input:focus-visible {
+input:focus-visible,
+select:focus-visible {
   outline: 3px solid #a65022;
   outline-offset: 3px;
 }

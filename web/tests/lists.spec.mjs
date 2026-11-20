@@ -111,7 +111,6 @@ test("long unbroken content wraps in both phone caller views", async ({
     await form
       .getByLabel("Occasion date", { exact: true })
       .fill(date.toISOString().slice(0, 10));
-    await form.getByLabel("Fixture family", { exact: true }).check();
     await form
       .getByRole("button", { name: "Create list", exact: true })
       .click();
@@ -187,7 +186,6 @@ test("phone owner and second person preserve secrecy through coordination and ar
       .filter({ has: owner.getByText("Create a list", { exact: true }) });
     await form.getByLabel("List name", { exact: true }).fill(name);
     await form.getByLabel("Occasion date", { exact: true }).fill(date);
-    await form.getByLabel("Fixture family", { exact: true }).check();
     await form
       .getByRole("button", { name: "Create list", exact: true })
       .click();
@@ -346,5 +344,102 @@ test.afterEach(async ({ browser }, info) => {
           .catch(() => {});
       }
     }
+  }
+});
+
+test("sharing managers control access while an owner cannot share", async ({
+  browser,
+}) => {
+  const contexts = await Promise.all(
+    [0, 1, 2].map(() => browser.newContext({ ignoreHTTPSErrors: true })),
+  );
+  try {
+    const [owner, manager, sibling] = await Promise.all(
+      contexts.map((c) => c.newPage()),
+    );
+    await login(sibling, "Third");
+    await login(manager, "Second");
+    await login(owner, "Owner");
+    await owner.getByText("Administration", { exact: true }).click();
+    await owner
+      .getByRole("button", { name: "Load accounts", exact: true })
+      .click();
+    const settings = owner.getByRole("form", {
+      name: "Settings for Owner",
+      exact: true,
+    });
+    await settings.getByLabel("Can share own lists", { exact: true }).uncheck();
+    await settings
+      .getByRole("button", { name: "Save settings for Owner", exact: true })
+      .click();
+    await expect(settings.getByRole("button")).toBeEnabled();
+    await owner.getByText("Create a list", { exact: true }).click();
+    const create = owner
+      .locator("details")
+      .filter({ has: owner.getByText("Create a list", { exact: true }) });
+    await create
+      .getByLabel("List name", { exact: true })
+      .fill("Private celebration");
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() + 2);
+    await create
+      .getByLabel("Occasion date", { exact: true })
+      .fill(date.toISOString().slice(0, 10));
+    await create
+      .getByRole("button", { name: "Create list", exact: true })
+      .click();
+    await open(owner, "Private celebration");
+    const ownerSharing = owner.getByRole("region", {
+      name: "Who can see this",
+      exact: true,
+    });
+    await expect(ownerSharing).toContainText("Sharing is read only.");
+    await expect(ownerSharing).toContainText("Second · Sharing manager");
+    await expect(
+      ownerSharing.getByRole("button", { name: "Save sharing" }),
+    ).toHaveCount(0);
+    await sibling.reload();
+    await expect(sibling.getByText("No lists here yet.")).toBeVisible();
+    await manager.reload();
+    await open(manager, "Private celebration");
+    await manager
+      .getByLabel("Access for Third", { exact: true })
+      .selectOption("viewer");
+    await manager
+      .getByRole("button", { name: "Save sharing", exact: true })
+      .click();
+    await expect(
+      manager.getByRole("button", { name: "Save sharing", exact: true }),
+    ).toBeEnabled();
+    await sibling.reload();
+    await open(sibling, "Private celebration");
+    await expect(
+      sibling.getByRole("region", { name: "Who can see this" }),
+    ).toContainText("Sharing is read only.");
+    await manager
+      .getByLabel("Access for Third", { exact: true })
+      .selectOption("");
+    await manager
+      .getByRole("button", { name: "Save sharing", exact: true })
+      .click();
+    await expect(
+      manager.getByRole("button", { name: "Save sharing", exact: true }),
+    ).toBeEnabled();
+    await sibling.reload();
+    await expect(sibling.getByText("No lists here yet.")).toBeVisible();
+    await manager
+      .getByLabel("Access for Second", { exact: true })
+      .selectOption("");
+    await manager
+      .getByRole("button", { name: "Save sharing", exact: true })
+      .click();
+    await expect(manager.getByRole("alert")).toHaveText("invalid input");
+    await owner.reload();
+    await open(owner, "Private celebration");
+    await expect(
+      owner.getByRole("region", { name: "Who can see this" }),
+    ).not.toContainText("Third");
+  } finally {
+    await Promise.all(contexts.map((c) => c.close()));
   }
 });
