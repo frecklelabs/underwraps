@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
@@ -26,14 +28,49 @@ jobs:
       - run: go test -count=10 ./internal/data -run 'TestClaimRace|TestOwnerDifferential'
       - run: npx --prefix web playwright install --with-deps chromium
       - run: npm run test:e2e --prefix web
+  leak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install pinned scanner
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.0
+      - name: Scan reachable history
+        shell: bash
+        run: bash scripts/leakcheck/scan.sh
+      - name: Test scanner failure handling
+        run: python3 scripts/leakcheck/test_scan.py
   image:
-    needs: test
+    needs: [test, leak]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: tags
         shell: bash
         env:
@@ -66,11 +103,10 @@ jobs:
           platforms: linux/amd64
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
+    needs: [test, leak]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     outputs:
       created: ${{ steps.release.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name }}
@@ -91,8 +127,8 @@ jobs:
         with:
           token: ${{ steps.token.outputs.token }}
   release-image:
-    needs: [release, image]
-    if: needs.release.outputs.created == 'true'
+    needs: [release, publish]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release.outputs.created == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -101,6 +137,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:

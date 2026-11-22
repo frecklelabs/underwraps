@@ -1,0 +1,4 @@
+title = "Under Wraps secret scan"
+
+[extend]
+useDefault = true
